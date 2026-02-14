@@ -1,191 +1,207 @@
+// app/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 export default function Home() {
-  const [btcHoldings, setBtcHoldings] = useState<string>("0.01");
-  const [monthlyInvestment, setMonthlyInvestment] = useState<string>("300");
+  const [btcHoldings, setBtcHoldings] = useState<number>(0.01);
+  const [monthlyInvestment, setMonthlyInvestment] = useState<number>(300);
 
-  // live price
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
-  const [loadingPrice, setLoadingPrice] = useState<boolean>(false);
+  const [isLoadingPrice, setIsLoadingPrice] = useState(false);
   const [priceError, setPriceError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  // fetch BTC price from your API route
+  // ---- Live price fetch (manual + auto refresh)
   const fetchBtcPrice = async () => {
+    setIsLoadingPrice(true);
+    setPriceError(null);
+
     try {
-      setLoadingPrice(true);
-      setPriceError(null);
-
       const res = await fetch("/api/btc-price", { cache: "no-store" });
-      if (!res.ok) throw new Error("Bad response from /api/btc-price");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const data = await res.json();
-      if (typeof data?.price !== "number") throw new Error("Invalid price data");
+      const data = (await res.json()) as { price?: number; error?: string };
+      if (typeof data.price !== "number") {
+        throw new Error(data.error || "No price returned");
+      }
 
       setBtcPrice(data.price);
+      setLastUpdated(new Date());
     } catch (e: any) {
-      setPriceError("Could not fetch live BTC price.");
-      setBtcPrice(null);
+      setPriceError(e?.message || "Failed to fetch BTC price");
     } finally {
-      setLoadingPrice(false);
+      setIsLoadingPrice(false);
     }
   };
 
+  // Fetch once on load + refresh every 60 seconds
   useEffect(() => {
     fetchBtcPrice();
+    const id = setInterval(fetchBtcPrice, 60_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const holdingsNum = useMemo(() => {
-    const n = parseFloat(btcHoldings);
-    return Number.isFinite(n) ? n : 0;
-  }, [btcHoldings]);
-
-  const monthlyUsdNum = useMemo(() => {
-    const n = parseFloat(monthlyInvestment);
-    return Number.isFinite(n) ? n : 0;
-  }, [monthlyInvestment]);
-
-  const btcRemaining = useMemo(() => {
-    return Math.max(0, 1 - holdingsNum);
-  }, [holdingsNum]);
-
-  const monthlyBtc = useMemo(() => {
-    if (!btcPrice || btcPrice <= 0) return 0;
-    return monthlyUsdNum / btcPrice;
-  }, [monthlyUsdNum, btcPrice]);
+  // ---- Calculations
+  const remainingBtc = Math.max(0, 1 - btcHoldings);
 
   const monthsToGoal = useMemo(() => {
     if (!btcPrice || btcPrice <= 0) return 0;
-    if (monthlyBtc <= 0) return 0;
-    if (btcRemaining <= 0) return 0;
-    return Math.ceil(btcRemaining / monthlyBtc);
-  }, [btcPrice, monthlyBtc, btcRemaining]);
+    if (monthlyInvestment <= 0) return 0;
 
-  const progressPct = useMemo(() => {
-    const pct = holdingsNum * 100;
-    return Math.max(0, Math.min(100, pct));
-  }, [holdingsNum]);
+    const btcPerMonth = monthlyInvestment / btcPrice;
+    if (btcPerMonth <= 0) return 0;
 
-  // ✅ NEW: USD value of holdings
+    return Math.ceil(remainingBtc / btcPerMonth);
+  }, [btcPrice, monthlyInvestment, remainingBtc]);
+
+  const progressPct = Math.min(100, Math.max(0, btcHoldings * 100));
+
   const holdingsUsd = useMemo(() => {
-    if (!btcPrice || btcPrice <= 0) return null;
-    return holdingsNum * btcPrice;
-  }, [holdingsNum, btcPrice]);
+    if (!btcPrice) return null;
+    return btcHoldings * btcPrice;
+  }, [btcHoldings, btcPrice]);
 
-  const formatUsd = (value: number) =>
-    value.toLocaleString(undefined, { style: "currency", currency: "USD" });
+  const timeBreakdown = useMemo(() => {
+    if (monthsToGoal <= 0) return "—";
+
+    const years = Math.floor(monthsToGoal / 12);
+    const months = monthsToGoal % 12;
+
+    if (years === 0) return `${months} month${months === 1 ? "" : "s"}`;
+    if (months === 0) return `${years} year${years === 1 ? "" : "s"}`;
+
+    return `${years} year${years === 1 ? "" : "s"} ${months} month${
+      months === 1 ? "" : "s"
+    }`;
+  }, [monthsToGoal]);
 
   return (
-    <main className="min-h-screen bg-black text-white flex items-center justify-center px-6 py-16">
+    <main className="min-h-screen bg-black text-white flex items-center justify-center px-4 py-16">
       <div className="w-full max-w-3xl">
-        <h1 className="text-5xl font-bold text-center mb-12">Road to 1 BTC</h1>
+        <h1 className="text-5xl md:text-6xl font-extrabold text-center mb-12">
+          Road to 1 BTC
+        </h1>
 
-        <div className="space-y-10">
-          {/* BTC holdings */}
+        <div className="space-y-8">
+          {/* Current BTC Holdings */}
           <div>
             <label className="block text-xl text-gray-200 mb-3">
               Current BTC Holdings
             </label>
             <input
               type="number"
-              step="0.00000001"
               inputMode="decimal"
-              value={btcHoldings}
-              onChange={(e) => setBtcHoldings(e.target.value)}
-              className="w-full text-black bg-white rounded-xl p-4 text-xl outline-none border-2 border-transparent focus:border-orange-500"
+              step="0.0001"
+              min={0}
+              max={1}
+              value={Number.isFinite(btcHoldings) ? btcHoldings : 0}
+              onChange={(e) => setBtcHoldings(parseFloat(e.target.value || "0"))}
+              className="w-full rounded-lg border border-gray-300 bg-white text-black px-4 py-4 text-xl focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
             />
-
-            {/* ✅ NEW: USD value display */}
-            <div className="mt-3 text-gray-200">
-              {btcPrice && holdingsUsd !== null ? (
-                <span>
-                  Your BTC is worth:{" "}
-                  <span className="font-semibold text-white">
-                    {formatUsd(holdingsUsd)}
-                  </span>
-                </span>
-              ) : (
-                <span className="text-gray-400">Your BTC value will appear once price loads.</span>
-              )}
-            </div>
+            {holdingsUsd !== null && (
+              <p className="text-gray-300 mt-2 text-lg">
+                That’s worth{" "}
+                <span className="font-semibold">
+                  ${holdingsUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </span>{" "}
+                at the current price.
+              </p>
+            )}
           </div>
 
-          {/* Monthly investment */}
+          {/* Monthly Investment */}
           <div>
             <label className="block text-xl text-gray-200 mb-3">
               Monthly Investment (USD)
             </label>
             <input
               type="number"
+              inputMode="decimal"
               step="1"
-              inputMode="numeric"
-              value={monthlyInvestment}
-              onChange={(e) => setMonthlyInvestment(e.target.value)}
-              className="w-full text-black bg-white rounded-xl p-4 text-xl outline-none border-2 border-transparent focus:border-orange-500"
+              min={0}
+              value={Number.isFinite(monthlyInvestment) ? monthlyInvestment : 0}
+              onChange={(e) =>
+                setMonthlyInvestment(parseFloat(e.target.value || "0"))
+              }
+              className="w-full rounded-lg border border-gray-300 bg-white text-black px-4 py-4 text-xl focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
             />
           </div>
 
-          {/* BTC live price */}
+          {/* BTC Price (Live) */}
           <div>
             <label className="block text-xl text-gray-200 mb-3">
               BTC Price (Live)
             </label>
 
-            <div className="flex gap-4">
+            <div className="flex items-stretch gap-4">
               <input
                 type="text"
                 readOnly
                 value={
-                  btcPrice
+                  btcPrice !== null
                     ? btcPrice.toLocaleString(undefined, { maximumFractionDigits: 3 })
-                    : loadingPrice
+                    : isLoadingPrice
                     ? "Loading..."
                     : "—"
                 }
-                className="flex-1 text-black bg-white rounded-xl p-4 text-xl outline-none border-2 border-transparent"
+                className="flex-1 rounded-lg border border-gray-300 bg-white text-black px-4 py-4 text-xl focus:outline-none"
               />
 
               <button
                 onClick={fetchBtcPrice}
-                className="bg-orange-500 hover:bg-orange-600 active:bg-orange-700 rounded-xl px-5 text-xl font-semibold"
+                disabled={isLoadingPrice}
+                className="w-14 rounded-lg bg-orange-500 hover:bg-orange-600 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center text-2xl"
                 title="Refresh price"
+                aria-label="Refresh price"
               >
                 ↻
               </button>
             </div>
 
-            {priceError && (
-              <p className="mt-2 text-red-400 text-sm">{priceError}</p>
-            )}
-
-            {btcPrice && (
-              <p className="mt-2 text-gray-400 text-sm">
-                Monthly buy ≈ {(monthlyBtc || 0).toFixed(8)} BTC
-              </p>
-            )}
+            <div className="mt-2 text-sm text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span>Auto-updates every 60 seconds.</span>
+              {lastUpdated && (
+                <span>
+                  Last update:{" "}
+                  {lastUpdated.toLocaleTimeString(undefined, {
+                    hour: "numeric",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
+                </span>
+              )}
+              {priceError && (
+                <span className="text-red-300">Price error: {priceError}</span>
+              )}
+            </div>
           </div>
 
-          {/* Results card */}
+          {/* Results Card */}
           <div className="bg-slate-900/60 rounded-2xl p-8 border border-slate-700">
-            <p className="text-2xl text-gray-200">Estimated Months to Reach 1 BTC:</p>
+            <p className="text-2xl text-gray-200">Estimated Time to Reach 1 BTC:</p>
+
             <p className="text-5xl font-bold mt-4">
               {monthsToGoal > 0 ? `${monthsToGoal} months` : "—"}
             </p>
+
+            <p className="text-gray-300 mt-3 text-xl">{timeBreakdown}</p>
+
             <p className="text-gray-400 mt-4">
               Projection assumes BTC price and monthly investment remain constant.
             </p>
           </div>
 
-          {/* Progress bar */}
+          {/* Progress Bar */}
           <div>
-            <div className="w-full bg-slate-800 rounded-full h-5 overflow-hidden">
+            <div className="w-full bg-slate-800 rounded h-4 overflow-hidden">
               <div
-                className="bg-orange-500 h-5"
+                className="bg-orange-500 h-4"
                 style={{ width: `${progressPct}%` }}
               />
             </div>
-            <p className="mt-3 text-xl text-gray-200">
+            <p className="text-lg text-gray-200 mt-3">
               {progressPct.toFixed(2)}% Complete
             </p>
           </div>
